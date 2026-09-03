@@ -1,0 +1,41 @@
+{
+  "summary": "Backend-only regression run after FIX #1-#6. Updated the existing pytest suite (added image_base64 to all withdraw-approve bodies, inverted the PATCH/DELETE 404 expectations, added FIX #3 broadcast_logs status/error assertions, FIX #5 negative-balance guard tests, FIX #6 required-image test) and re-ran the full suite: 59/59 PASSED (was 53/57). All 4 previously failing Markdown tests now pass - underscore/asterisk manual broadcasts return 200 with a real message_id, and withdraw approve for username 'TESTArga_0136' and first_name 'TEST *Star' now return a non-null channel_message_id (telegram_bot._safe_send_message/_safe_send_photo plain-text fallback works). Withdraw approve response now returns dm_sent/channel_message_id/broadcast_error/dm_error, and broadcast_logs carries status ('sent'|'failed') + error. Also verified DB left clean (4 real users, 2 tasks, 2 broadcast_logs, real seed data untouched) and kept channel broadcasts to ~8 messages.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/withdrawals/{id}/approve", "issue": "image_base64 is required but never validated. An undecodable base64 string (e.g. 'data:image/png;base64,!!!notbase64!!!') still returns HTTP 200 and marks the withdrawal 'approved' + writes balance_history, while both DM and channel broadcast fail (response: dm_sent=false, channel_message_id=null, broadcast_error='Invalid base64-encoded string...'). Recommend validating/decoding image_base64 in the Pydantic model or before mutating state, returning 400 on bad data. Same applies to images Telegram rejects (a 1x1 PNG makes Telegram return BadRequest 'Image_process_failed' - not a parse error, so the plain-text fallback does not help and the proof is never published even though the endpoint returns 200)."},
+      {"endpoint": "POST /api/broadcast/manual", "issue": "Empty text ({\"text\": \"\"}) returns HTTP 500 'Gagal broadcast: Message text is empty' instead of 422/400. Add min_length=1 to BroadcastMessage.text."},
+      {"endpoint": "GET /api/stats/overview", "issue": "Still open from iteration 1: daily buckets use string range $gte 'T00:00:00' / $lt 'T23:59:59' (drops records in the last second of the day) and issue 14 sequential aggregations."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_broadcast_rca.py",
+    "/app/backend/tests/test_username_md_rca.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Validate image_base64 (strip data-uri prefix, base64.b64decode(validate=True), non-trivial size) and return 400 before approving the withdrawal, so an unusable proof cannot silently mark a payout as done.",
+    "Consider returning a warning/207-style flag (or a retry endpoint) when dm_sent=false or channel_message_id=null so the admin dashboard can surface undelivered proofs.",
+    "Add min_length=1 to BroadcastMessage.text so empty broadcasts return 422 instead of 500.",
+    "Optional (from iteration 1, still open): fix stats daily bucket boundaries, N+1 queries on /api/tasks|/api/submissions|/api/withdrawals, deprecated @app.on_event startup/shutdown, unused imports, no rate limiting on /api/auth/login."
+  ],
+  "critical_code_review_comments": [
+    "FIX #1 verified correct: telegram_bot._safe_send_message/_safe_send_photo catch BadRequest and retry with parse_mode=None; both the channel broadcast and DM now succeed for names/notes with _ and *. Note the fallback only triggers for parse-entity errors - other BadRequests (Image_process_failed, Chat not found) still propagate to the swallowed try/except in server.py.",
+    "approve_withdraw mutates withdrawal status and inserts balance_history BEFORE attempting delivery; on delivery failure the record stays 'approved' with no retry path. Consider persisting delivery state and offering a resend."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_broadcast_rca.py",
+    "/app/backend/tests/test_username_md_rca.py"
+  ],
+  "success_rate": {"backend": "100% (59/59 passed)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Temporary MongoDB docs in bigocuan_db (TEST users 9900000xx + matching submissions/withdrawals/balance_history/TEST_* tasks) inserted and deleted within each test. Post-run DB verified: 4 real users, 2 real tasks, 2 submissions, 1 withdrawal, 2 broadcast_logs, 2 balance_history - no TEST_ leftovers.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin admin/admin123 (from /app/memory/test_credentials.md) - works, returns HS256 JWT.",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` (pytest.ini forces -n 2 --dist loadscope; do NOT edit it). IMPORTANT: uvicorn --reload watches /app/backend including tests/, so writing test files triggers a backend restart - sleep ~12s after editing test files or you will get transient 503 'upstream connect error'. backend_test.py exports TEST_IMG_B64 (320x320 PNG) which MUST be used for every withdraw-approve body: image_base64 is required (422 otherwise) and a 1x1 PNG makes Telegram return 'Image_process_failed'. Every broadcast test posts a real message to @BigoCuan - keep counts low. All 6 fixes from iteration 1 verified. Remaining open items: image_base64 not validated, empty manual broadcast 500, stats daily bucket boundaries. Frontend still never exercised.",
+  "rca_of_the_issue": "Iteration-1 root cause (unescaped Markdown passed to Telegram with parse_mode=MARKDOWN) is resolved by the _safe_send_message/_safe_send_photo plain-text retry. During this run two test-side false failures appeared: (a) HTTP 503s because writing files under /app/backend/tests triggers uvicorn reload mid-run, and (b) channel_message_id=None with error 'Image_process_failed' because the 1x1 PNG placeholder is rejected by Telegram's sendPhoto. Both were fixed in the tests (larger PNG fixture + wait after edits); the underlying app behaviour is correct. The one genuine remaining defect is that approve_withdraw accepts and persists an undecodable/unusable image_base64 and still returns 200."
+}

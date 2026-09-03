@@ -1,0 +1,164 @@
+{
+  "project_name": "BigoCuan Telegram Task Bot Admin Dashboard",
+  "app_type": "dashboard",
+  "target_audience": "Platform Administrators & Operations Managers managing Telegram task-to-earn community in Indonesia",
+  "archetype": "THE PERFORMANCE PRO x FINTECH LUXE (Indonesian E-Wallet & Task Analytics)",
+  "theme": "Dark Mode (Deep Slate Void with Vibrant Emerald & Rupiah Gold)",
+  "typography": {
+    "headings": {
+      "font_family": "'Cabinet Grotesk', 'Outfit', sans-serif",
+      "google_font_import": "https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap",
+      "sizes": {
+        "h1": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight",
+        "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+        "h3": "text-xl sm:text-2xl font-semibold tracking-tight",
+        "h4": "text-lg sm:text-xl font-medium tracking-tight"
+      }
+    },
+    "body": {
+      "font_family": "'IBM Plex Sans', sans-serif",
+      "sizes": {
+        "regular": "text-sm sm:text-base leading-relaxed text-slate-300",
+        "small": "text-xs sm:text-sm text-slate-400",
+        "label": "text-xs font-semibold uppercase tracking-wider text-slate-400"
+      }
+    },
+    "numbers_and_currency": {
+      "font_family": "'JetBrains Mono', monospace",
+      "formatting": "Format all monetary values as Rupiah (e.g., Rp 150.000, Rp 2.500.000)"
+    }
+  },
+  "colors": {
+    "background": {
+      "main": "#0B0F17",
+      "sidebar": "#080C13",
+      "card": "#121824",
+      "card_hover": "#172030",
+      "overlay": "rgba(11, 15, 23, 0.85)"
+    },
+    "borders": {
+      "subtle": "#1E293B",
+      "active": "#334155",
+      "glow": "rgba(16, 185, 129, 0.3)"
+    },
+    "primary": {
+      "emerald": "#10B981",
+      "emerald_hover": "#059669",
+      "emerald_light": "rgba(16, 185, 129, 0.15)"
+    },
+    "accents": {
+      "gold_rupiah": "#F59E0B",
+      "cyan_info": "#06B6D4",
+      "purple_telegram": "#0088CC",
+      "danger": "#EF4444",
+      "warning": "#F59E0B",
+      "success": "#10B981"
+    },
+    "payment_methods": {
+      "dana": "#008CEE",
+      "gopay": "#00AED6",
+      "shopeepay": "#EE4D2D"
+    }
+  },
+  "layout_and_spacing": {
+    "dashboard_mode": "High Density Grid (MODE B)",
+    "sidebar": "Fixed left navigation (width 256px on desktop, collapsible on mobile) with logo, quick broadcast badge @BigoCuan, system status indicator, and navigation tabs",
+    "header": "Sticky top bar with quick stats summary, channel connection status, notification bell for pending tasks/withdrawals, admin avatar, and theme toggle",
+    "content_padding": "p-4 sm:p-6 lg:p-8 space-y-8",
+    "grid_gap": "gap-4 sm:gap-6",
+    "card_padding": "p-5 sm:p-6"
+  },
+  "core_sections": [
+    {
+      "id": "overview",
+      "title": "Dashboard Overview",
+      "components": [
+        "4 High-Impact KPI Cards (Total Users, Pending Task Submissions, Pending Withdrawals IDR, Total Payout IDR)",
+        "Daily Earnings & Submissions Sparkline / Area Chart (Recharts)",
+        "E-Wallet Distribution Chart (DANA, GoPay, ShopeePay ratio)",
+        "Recent Task Activity Feed & Quick Approval Queue Widget",
+        "Telegram Channel Broadcast Live Feed Banner (@BigoCuan)"
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Task Management",
+      "components": [
+        "Create Task Form Modal / Drawer (Title, Description, Reward IDR, Max Quotas, Requirements, Link URL, Proof Type)",
+        "Task Filter & Search Bar (Active, Completed, Paused, Category)",
+        "Task Cards Grid & Data Table with quick pause/edit/delete/view submissions options",
+        "Task Analytics (Conversion rate per task, total payout generated per task)"
+      ]
+    },
+    {
+      "id": "submissions",
+      "title": "Task Submissions Review",
+      "components": [
+        "Submissions Verification Queue with Filter by Task / Status (Pending, Approved, Rejected)",
+        "Interactive Proof Reviewer (Photo Zoom, User Telegram Handle, Task Instruction Comparison)",
+        "Quick Action Approval Panel with preset Rejection Reasons (Blurry Screenshot, Invalid Proof, Wrong Task, Duplicate)",
+        "Batch Action Selector (Approve Selected, Reject Selected)"
+      ]
+    },
+    {
+      "id": "withdrawals",
+      "title": "Withdrawal Requests & Payouts",
+      "components": [
+        "Pending Withdrawal Queue grouped by E-Wallet (DANA, GoPay, ShopeePay)",
+        "Withdrawal Approval Modal with Photo/Receipt Upload and Custom Note",
+        "Auto Telegram Channel Broadcast Preview (@BigoCuan broadcast simulator with formatted text & proof image preview)",
+        "Payout Transaction Logs with Status Badges (Pending, Approved & Broadcasted, Rejected)"
+      ]
+    },
+    {
+      "id": "users",
+      "title": "Users Management",
+      "components": [
+        "User Directory Table (Telegram ID, Username, IDR Balance, Total Earned, Tasks Completed, Withdrawal Count, Status)",
+        "User Profile Detail Modal (Balance history, Submission history, Direct Balance Adjustment/Bonus, Suspend User)",
+        "Search by Telegram Username, Name, or Wallet Phone Number"
+      ]
+    },
+    {
+      "id": "broadcast_logs",
+      "title": "Channel Broadcast Log",
+      "components": [
+        "Broadcast Feed displaying every auto-sent payout confirmation to @BigoCuan",
+        "Manual Channel Announcement Sender (Text + Image upload to test channel integration)",
+        "Channel Status Indicator (Bot Admin Rights, Member Count, API Connection status)"
+      ]
+    }
+  ],
+  "motion_and_interactions": {
+    "hover_effects": "Cards transition with subtle border highlight 'border-emerald-500/40' and scale -translate-y-0.5",
+    "button_feedback": "Active scale-95 click animation with instant visual state feedback",
+    "approval_animations": "Smooth pulse green glow when approving task/withdrawal, subtle shake when rejecting",
+    "modals": "Backdrop blur 12px with slide-in-up animation",
+    "toast_notifications": "Sonner toast popup on successful approval, rejection, task creation, or broadcast trigger"
+  },
+  "testing_attributes": {
+    "rule": "Every button, input, tab, card, modal action, table row, and metric card MUST include data-testid attribute in kebab-case",
+    "examples": [
+      "data-testid='login-username-input'",
+      "data-testid='login-submit-button'",
+      "data-testid='kpi-total-users'",
+      "data-testid='kpi-pending-withdrawals'",
+      "data-testid='create-task-button'",
+      "data-testid='task-title-input'",
+      "data-testid='approve-submission-btn-123'",
+      "data-testid='reject-submission-btn-123'",
+      "data-testid='withdrawal-approve-and-broadcast-btn'",
+      "data-testid='user-table-row-456'",
+      "data-testid='broadcast-log-item-789'"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Build a complete, functional, single-page React administrative interface for BigoCuan Telegram Task Bot.",
+    "Include mock data populated with realistic Indonesian names (e.g. Budi Santoso, Siti Rahma, Rizky Pratama), realistic IDR amounts (Rp 1.000 to Rp 100.000 for tasks, Rp 25.000 to Rp 250.000 for withdrawals), and authentic Indonesian payment details (DANA 0812xxxx, GoPay 0857xxxx, ShopeePay 0819xxxx).",
+    "Provide interactive modals for Task Creation, Task Proof Review, Withdrawal Approval with Photo Upload & Telegram Broadcast Preview (@BigoCuan), and User Detail Adjustment.",
+    "Include quick filter toggles, search bars, pagination, and toast notifications via Sonner for all administrative actions.",
+    "Use Lucide React icons (@lucide/react or lucide-react) for clear visual navigation.",
+    "Ensure dark/light mode toggle support with dark mode as default premium fintech aesthetic.",
+    "Ensure ALL interactive elements have kebab-case data-testid attributes."
+  ]
+}

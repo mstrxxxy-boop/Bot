@@ -1,0 +1,63 @@
+{
+  "summary": "Backend-only testing of BigoCuan Task Bot API. Built a pytest regression suite (57 tests) covering auth/JWT, auth protection on all 17 protected routes, health, stats overview, full Task CRUD, submission approve/reject with balance+history+slot verification, withdrawal approve/reject with refund + broadcast_logs verification, user detail + balance adjust (credit/debit), and broadcast endpoints. Seeded submissions/withdrawals/users directly in MongoDB (bigocuan_db) to simulate Telegram-originated data, and cleaned all TEST_ data afterwards (all 4 real seed users and their data verified intact). Result: 53/57 passed (93%). All 4 failures share ONE root cause: unescaped Markdown in Telegram message bodies. Telegram bot confirmed running (/api/health bot_running=true, logs show 'Telegram bot started (polling)') and the bot IS admin in @BigoCuan (plain-text broadcast returned a real channel message_id).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/withdrawals/{id}/approve",
+        "issue": "CRITICAL: Channel broadcast AND user DM silently fail when the user's username/first_name or the admin note contains a Markdown special char (_ * ` [). server.py builds channel_text/user_text with parse_mode=MARKDOWN but never escapes dynamic values. Telegram returns 400 \"Can't parse entities\", the except block swallows it, endpoint returns 200 {ok:true}, and broadcast_logs is written with channel_message_id=null. Admin believes payout proof was published; user receives nothing. REPRODUCED with existing real user 'Arga_0136' (single underscore in username) -> channel_message_id=None. Also reproduced with first_name containing '*' and with admin note 'TEST_note with_underscore'.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/broadcast/manual",
+        "issue": "Returns HTTP 500 'Gagal broadcast: Can't parse entities: can't find end of the entity starting at byte offset 4' whenever the admin's broadcast text contains an unbalanced Markdown char (e.g. 'TEST_broadcast abc' or 'a *bold'). Same unescaped-Markdown root cause. Plain text broadcast works (message_id returned), proving the bot/channel config is fine.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {"endpoint": "PATCH /api/tasks/{task_id}", "issue": "Non-existent task id returns HTTP 200 with body `null` instead of 404. Also returns {\"ok\":true} (different shape) when the update body is empty - inconsistent response contract."},
+      {"endpoint": "DELETE /api/tasks/{task_id}", "issue": "Non-existent task id returns 200 {\"ok\":true} instead of 404 (delete_one result never checked)."},
+      {"endpoint": "POST /api/users/{telegram_id}/adjust", "issue": "No guard against driving balance negative; a large negative amount silently produces a negative balance."},
+      {"endpoint": "POST /api/withdrawals/{id}/approve", "issue": "image_base64 is Optional even though the spec requires admin to upload payment proof; approving with note only succeeds and broadcasts a text-only message. No validation that base64 is decodable either (invalid base64 would raise inside the swallowed try)."},
+      {"endpoint": "GET /api/stats/overview", "issue": "Daily buckets use string range {$gte: 'YYYY-MM-DDT00:00:00', $lt: 'YYYY-MM-DDT23:59:59'} which drops any record in the last second of the day; should use $lt next-day T00:00:00. Also issues 14 sequential aggregations (2 per day)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_broadcast_rca.py",
+    "/app/backend/tests/test_username_md_rca.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX #1 (CRITICAL): Escape all dynamic values interpolated into Markdown Telegram messages. telegram_bot.py already defines an unused escape_md() helper - apply it in server.py to display_name, username_tag, wd['method'], wd['account_name'], wd['account_number'], body.note, task['title'], and h/note fields; or switch these messages to parse_mode=None. Safest: wrap send_dm/send_channel_broadcast so that on a Telegram 'Can't parse entities' BadRequest they retry once with parse_mode=None.",
+    "FIX #2: /api/broadcast/manual must not 500 on admin text containing _ or * - escape it (or retry without parse_mode) before returning an error.",
+    "FIX #3: Record broadcast/DM outcome in broadcast_logs (e.g. status: sent|failed + error message) instead of silently storing channel_message_id=null, and surface it in the dashboard so admins know the proof was never published.",
+    "FIX #4: Return 404 from PATCH/DELETE /api/tasks/{id} when the task does not exist; make PATCH response shape consistent.",
+    "FIX #5: Reject balance adjustments that would make a user's balance negative (or explicitly document/allow it).",
+    "FIX #6: Require image_base64 on withdraw approval (spec: admin uploads proof photo+text) and validate it decodes."
+  ],
+  "critical_code_review_comments": [
+    "server.py: every send_dm/send_channel_broadcast call passes user-controlled strings into parse_mode=MARKDOWN without escaping - this is the single root cause of all 4 test failures and breaks the core payout-proof feature for any user whose Telegram username contains '_' (very common).",
+    "server.py: bare `except Exception` around send_dm/send_channel_broadcast converts a hard delivery failure into a silent success; at minimum persist the error and expose it via the API.",
+    "server.py N+1 queries: GET /api/tasks (2 count_documents per task), /api/submissions (2 find_one per submission, limit 2000) and /api/withdrawals (1 find_one per row) will not scale - use $lookup aggregation.",
+    "server.py: `bcrypt` and `base64`, `UploadFile`, `File`, `Form`, `status`, `List`, `Field` are imported but unused; admin password is compared as plaintext against the env var with no rate limiting/lockout on /api/auth/login.",
+    "server.py: @app.on_event('startup'/'shutdown') is deprecated in current FastAPI - migrate to the lifespan context manager.",
+    "server.py: create_index() calls on startup will raise on an existing index with different options; also users.telegram_id unique index means a duplicate insert from the bot would 500 rather than being handled.",
+    "telegram_bot.py: ConversationHandler states (AWAIT_PROOF_PHOTO etc.) and the InputFile/ConversationHandler imports are dead code - flow is hand-rolled via ctx.user_data['state']; ctx.user_data state is in-memory only, so a backend restart loses any in-progress submission/withdraw/bank flow.",
+    "telegram_bot.py on_text 'await_wd_amount': deducts balance and creates the withdrawal in two non-atomic operations, and `user['bank']` is dereferenced without a None check - a user who clears their bank could hit a KeyError."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_broadcast_rca.py",
+    "/app/backend/tests/test_username_md_rca.py"
+  ],
+  "success_rate": {"backend": "93% (53/57 passed; all 4 failures = 1 root cause)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Inserted temporary MongoDB docs in bigocuan_db: TEST users telegram_id 990000011/012/013/021/022/023/024/031/041/042/051/052/053, matching submissions, withdrawals, balance_history and TEST_* tasks. All removed after the run - verified DB back to 4 real users, 2 tasks, 1 submission, 1 withdrawal, 2 balance_history, 2 broadcast_logs (pre-existing real data untouched).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin username=admin / password=admin123 (from /app/memory/test_credentials.md) - login works and returns a 7-day HS256 JWT.",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` (pytest.ini forces -n 2 --dist loadscope; do not edit it). conftest.py exposes API, mongo_db (pymongo bigocuan_db), client (admin-authed session), anon_client. Helpers make_user/make_submission/make_withdrawal in backend_test.py seed Telegram-originated data. test_broadcast_rca.py and test_username_md_rca.py are RCA probes that ASSERT THE FIX: they currently fail and must PASS once Markdown escaping is added (they check broadcast_logs.channel_message_id is not None and that /api/broadcast/manual returns 200). NOTE: test_broadcast_rca.py::test_underscore_text_breaks_broadcast and test_asterisk_text_breaks_broadcast currently assert status_code==500 to document the bug - after the fix these two must be inverted to expect 200. Every broadcast test sends a real message to @BigoCuan, so keep counts low. Frontend was never exercised.",
+  "rca_of_the_issue": "server.py composes Telegram message bodies with f-strings and sends them with parse_mode=ParseMode.MARKDOWN, interpolating unescaped user/admin data (user.username, user.first_name, wd.account_name, body.note, task.title, manual broadcast text). Telegram's legacy Markdown treats _ * ` [ as entity delimiters, so a single unbalanced occurrence makes the Bot API reject the request with 400 'Can't parse entities: can't find end of the entity starting at byte offset N'. In /api/broadcast/manual the exception is re-raised as HTTP 500; in /api/withdrawals/{id}/approve it is caught and logged, so the endpoint returns 200 while the DM and the @BigoCuan proof broadcast were never delivered and broadcast_logs stores channel_message_id=null. Reproduction: POST /api/broadcast/manual {\"text\":\"TEST_abc\"} -> 500; approve a withdrawal for a user whose username is 'Arga_0136' (existing real user) -> 200 but channel_message_id=null. Verified NOT a permissions problem: a plain-text broadcast returns a valid channel message_id, so the bot is a channel admin. Mitigation: escape dynamic segments with the existing telegram_bot.escape_md(), or send with parse_mode=None, or wrap send_* to retry once without parse_mode on BadRequest."
+}
