@@ -56,6 +56,16 @@ def format_idr(amount: int) -> str:
     return f"Rp {amount:,}".replace(",", ".")
 
 
+def censor_account(num: str) -> str:
+    """Show first 4 and last 3 digits, mask middle. E.g. 081234567890 -> 0812*****890"""
+    if not num:
+        return ""
+    s = str(num)
+    if len(s) <= 7:
+        return s[:2] + "*" * max(0, len(s) - 4) + s[-2:] if len(s) > 4 else s
+    return s[:4] + "*" * 5 + s[-3:]
+
+
 def make_token(sub: str) -> str:
     payload = {"sub": sub, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
@@ -85,6 +95,9 @@ class TaskCreate(BaseModel):
     link: Optional[str] = None
     max_slots: int = 0
     category: str = "Other"
+    code: Optional[str] = None
+    example_image: Optional[str] = None
+    require_photo: bool = True
 
 
 class TaskUpdate(BaseModel):
@@ -96,6 +109,9 @@ class TaskUpdate(BaseModel):
     max_slots: Optional[int] = None
     active: Optional[bool] = None
     category: Optional[str] = None
+    code: Optional[str] = None
+    example_image: Optional[str] = None
+    require_photo: Optional[bool] = None
 
 
 class SubmissionAction(BaseModel):
@@ -104,7 +120,13 @@ class SubmissionAction(BaseModel):
 
 class WithdrawApprove(BaseModel):
     note: str = ""
-    image_base64: str = Field(..., min_length=100)
+    image_base64: Optional[str] = None  # OPTIONAL now
+
+
+class ReferralSettings(BaseModel):
+    percentage: int = Field(10, ge=0, le=100)
+    welcome_text: str = ""
+    signup_bonus: int = 0  # optional one-time signup bonus (0 = disabled)
 
 
 class BalanceAdjust(BaseModel):
@@ -242,6 +264,9 @@ async def create_task(body: TaskCreate, admin: str = Depends(verify_admin)):
         "link": body.link,
         "max_slots": body.max_slots,
         "category": body.category,
+        "code": body.code,
+        "example_image": body.example_image,
+        "require_photo": body.require_photo,
         "slots_used": 0,
         "active": True,
         "created_at": now_iso(),
@@ -332,6 +357,33 @@ async def approve_submission(sub_id: str, admin: str = Depends(verify_admin)):
         "ref_id": sub_id,
         "created_at": now_iso(),
     })
+    # Referral commission: give inviter X% of this reward
+    ref_settings = await db.settings.find_one({"id": "referral"}) or {}
+    ref_pct = int(ref_settings.get("percentage", 10))
+    inviter_id = (user_doc or {}).get("referred_by")
+    if inviter_id and ref_pct > 0:
+        commission = int(reward * ref_pct / 100)
+        if commission > 0:
+            await db.users.update_one({"telegram_id": inviter_id}, {
+                "$inc": {"balance": commission, "total_earned": commission, "referral_earnings": commission},
+            })
+            await db.balance_history.insert_one({
+                "id": new_id(),
+                "telegram_id": inviter_id,
+                "type": "credit",
+                "amount": commission,
+                "note": f"Komisi referral {ref_pct}% dari @{(user_doc or {}).get('username') or (user_doc or {}).get('first_name', 'user')}",
+                "ref_id": sub_id,
+                "created_at": now_iso(),
+            })
+            try:
+                await send_dm(
+                    inviter_id,
+                    f"🎉 *Komisi Referral!*\n\n"
+                    f"Kamu dapat *{format_idr(commission)}* ({ref_pct}%) dari task yang diselesaikan oleh referralmu.",
+                )
+            except Exception:
+                pass
     try:
         await send_dm(
             sub["telegram_id"],
@@ -415,13 +467,15 @@ async def approve_withdraw(wd_id: str, body: WithdrawApprove, admin: str = Depen
     if wd["status"] != "pending":
         raise HTTPException(400, "Sudah diproses")
 
-    try:
-        raw = body.image_base64.split(",", 1)[1] if body.image_base64.startswith("data:") else body.image_base64
-        img_bytes = base64.b64decode(raw, validate=True)
-        if len(img_bytes) < 500:
-            raise ValueError("Image too small")
-    except Exception:
-        raise HTTPException(400, "Bukti pembayaran tidak valid")
+    # Image is OPTIONAL. If provided, validate.
+    if body.image_base64:
+        try:
+            raw = body.image_base64.split(",", 1)[1] if body.image_base64.startswith("data:") else body.image_base64
+            img_bytes = base64.b64decode(raw, validate=True)
+            if len(img_bytes) < 500:
+                raise ValueError("Image too small")
+        except Exception:
+            raise HTTPException(400, "Bukti pembayaran tidak valid (base64 rusak atau terlalu kecil)")
 
     user = await db.users.find_one({"telegram_id": wd["telegram_id"]})
     if not user:
@@ -452,12 +506,14 @@ async def approve_withdraw(wd_id: str, body: WithdrawApprove, admin: str = Depen
     )
     display_name = user.get("first_name") or user.get("username") or "User"
     username_tag = f"@{user['username']}" if user.get("username") else "(no username)"
+    censored = censor_account(wd["account_number"])
     channel_text = (
         f"💸 *BUKTI PEMBAYARAN WITHDRAW*\n\n"
         f"👤 Nama: *{display_name}*\n"
         f"🆔 Username: {username_tag}\n"
         f"💰 Nominal: *{idr}*\n"
-        f"🏦 Metode: *{wd['method']}*\n\n"
+        f"🏦 Metode: *{wd['method']}*\n"
+        f"📱 Nomor: `{censored}`\n\n"
         f"{body.note}\n\n"
         f"Bergabung sekarang dan dapatkan cuan dari task harian di BigoCuan!"
     )
@@ -751,6 +807,66 @@ async def set_support(body: SupportBody, admin: str = Depends(verify_admin)):
     return {"ok": True}
 
 
+# ---------- Referral Settings ----------
+@api.get("/referral/settings")
+async def get_referral_settings(admin: str = Depends(verify_admin)):
+    doc = await db.settings.find_one({"id": "referral"}, {"_id": 0})
+    if not doc:
+        doc = {
+            "id": "referral",
+            "percentage": 10,
+            "signup_bonus": 0,
+            "welcome_text": (
+                "👥 *Ajak Teman & Dapat Komisi*\n\n"
+                "Ajak teman join BigoCuan dan dapatkan *10%* dari setiap task yang mereka selesaikan!\n\n"
+                "Komisi otomatis masuk ke saldo Anda saat teman Anda menyelesaikan task."
+            ),
+        }
+        await db.settings.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/referral/settings")
+async def set_referral_settings(body: ReferralSettings, admin: str = Depends(verify_admin)):
+    await db.settings.update_one(
+        {"id": "referral"},
+        {"$set": {
+            "percentage": body.percentage,
+            "welcome_text": body.welcome_text,
+            "signup_bonus": body.signup_bonus,
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.get("/users/{telegram_id}/referrals")
+async def user_referrals(telegram_id: int, admin: str = Depends(verify_admin)):
+    """Detailed referral dashboard for a specific user."""
+    user = await db.users.find_one({"telegram_id": telegram_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    refs = await db.users.find({"referred_by": telegram_id}, {"_id": 0}).to_list(500)
+    enriched = []
+    for r in refs:
+        tasks_done = await db.submissions.count_documents({"telegram_id": r["telegram_id"], "status": "approved"})
+        enriched.append({
+            "telegram_id": r["telegram_id"],
+            "username": r.get("username"),
+            "first_name": r.get("first_name"),
+            "balance": r.get("balance", 0),
+            "total_earned": r.get("total_earned", 0),
+            "tasks_completed": tasks_done,
+            "created_at": r.get("created_at"),
+        })
+    return {
+        "referral_count": len(enriched),
+        "referral_earnings": user.get("referral_earnings", 0),
+        "referrals": enriched,
+    }
+
+
 @api.get("/health")
 async def health():
     return {"status": "ok", "bot_running": bot_state.get("running", False)}
@@ -782,6 +898,7 @@ async def on_startup():
     await db.users.update_many({"referred_by": {"$exists": False}}, {"$set": {"referred_by": None}})
     await db.users.update_many({"referral_count": {"$exists": False}}, {"$set": {"referral_count": 0}})
     await db.users.update_many({"verified_channels": {"$exists": False}}, {"$set": {"verified_channels": False}})
+    await db.users.update_many({"referral_earnings": {"$exists": False}}, {"$set": {"referral_earnings": 0}})
     asyncio.create_task(start_bot())
     logger.info("BigoCuan API started")
 

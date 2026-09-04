@@ -115,33 +115,39 @@ async def get_or_create_user(user, ref_id: Optional[int] = None) -> dict:
         "tasks_completed": 0,
         "tasks_rejected": 0,
         "bank": None,
-        "referred_by": ref_id,
+        "referred_by": ref_id if (ref_id and ref_id != user.id) else None,
         "referral_count": 0,
+        "referral_earnings": 0,
         "verified_channels": False,
         "created_at": now_iso(),
     }
     await db.users.insert_one(dict(new_user))
-    # Handle referral bonus
+    # Increment inviter's referral_count and optional signup bonus
     if ref_id and ref_id != user.id:
         inviter = await db.users.find_one({"telegram_id": ref_id})
         if inviter:
-            await db.users.update_one({"telegram_id": ref_id}, {
-                "$inc": {"balance": REFERRAL_BONUS, "total_earned": REFERRAL_BONUS, "referral_count": 1},
-            })
-            await db.balance_history.insert_one({
-                "id": new_id(),
-                "telegram_id": ref_id,
-                "type": "credit",
-                "amount": REFERRAL_BONUS,
-                "note": f"Bonus referral dari @{user.username or user.first_name}",
-                "created_at": now_iso(),
-            })
+            settings = await db.settings.find_one({"id": "referral"}) or {}
+            signup_bonus = int(settings.get("signup_bonus", 0))
+            inc = {"referral_count": 1}
+            if signup_bonus > 0:
+                inc["balance"] = signup_bonus
+                inc["total_earned"] = signup_bonus
+                inc["referral_earnings"] = signup_bonus
+            await db.users.update_one({"telegram_id": ref_id}, {"$inc": inc})
+            if signup_bonus > 0:
+                await db.balance_history.insert_one({
+                    "id": new_id(),
+                    "telegram_id": ref_id,
+                    "type": "credit",
+                    "amount": signup_bonus,
+                    "note": f"Bonus signup referral dari @{user.username or user.first_name}",
+                    "created_at": now_iso(),
+                })
             try:
-                await bot_state["app"].bot.send_message(
-                    chat_id=ref_id,
-                    text=f"🎉 Bonus Referral!\n\nKamu dapat *{format_idr(REFERRAL_BONUS)}* karena berhasil ajak {user.first_name or 'teman baru'} join BigoCuan!",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
+                msg = f"🎉 Referral Baru!\n\n{user.first_name or 'Teman'} baru saja join lewat link Anda."
+                if signup_bonus > 0:
+                    msg += f"\n\nBonus signup: *{format_idr(signup_bonus)}*"
+                await bot_state["app"].bot.send_message(chat_id=ref_id, text=msg, parse_mode=ParseMode.MARKDOWN)
             except Exception:
                 pass
     return new_user
@@ -335,16 +341,34 @@ async def show_task_detail(q, task_id):
         text += f"📖 Instruksi:\n{task['instructions']}\n\n"
     if task.get("link"):
         text += f"🔗 Link: {task['link']}\n\n"
+    if task.get("code"):
+        text += f"🔑 *Kode (tap untuk salin):*\n`{task['code']}`\n\n"
+    req_photo = task.get("require_photo", True)
+    text += f"📸 Bukti foto: *{'WAJIB' if req_photo else 'Opsional (boleh kirim teks saja)'}*\n\n"
     text += "Klik *Kerjakan* untuk kirim bukti."
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Kerjakan", callback_data=f"do:{task_id}")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="menu:tasks")],
-    ])
+    buttons = []
+    if task.get("example_image"):
+        buttons.append([InlineKeyboardButton("🖼️ Lihat Contoh Bukti", callback_data=f"eximg:{task_id}")])
+    buttons.append([InlineKeyboardButton("✅ Kerjakan", callback_data=f"do:{task_id}")])
+    buttons.append([InlineKeyboardButton("⬅️ Kembali", callback_data="menu:tasks")])
+    kb = InlineKeyboardMarkup(buttons)
     try:
         await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     except Exception:
         await q.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def send_example_image(q, task_id):
+    task = await db.tasks.find_one({"id": task_id}, {"_id": 0})
+    if not task or not task.get("example_image"):
+        await q.answer("Contoh tidak tersedia", show_alert=True)
+        return
+    try:
+        img_bytes = _decode_image(task["example_image"])
+        await q.message.reply_photo(photo=img_bytes, caption=f"Contoh bukti untuk task: {task['title']}")
+    except Exception as e:
+        await q.answer(f"Gagal load contoh: {e}", show_alert=True)
 
 
 async def show_profile(q, user_doc):
@@ -531,6 +555,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await start_withdraw(update, ctx)
     elif data.startswith("task:"):
         await show_task_detail(q, data.split(":", 1)[1])
+    elif data.startswith("eximg:"):
+        await send_example_image(q, data.split(":", 1)[1])
     elif data.startswith("do:"):
         await start_do_task(update, ctx, data.split(":", 1)[1])
     elif data == "bank:set":
@@ -665,13 +691,26 @@ async def start_do_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_id:
         await update.callback_query.edit_message_text("Task tidak ditemukan.")
         return
     ctx.user_data["submitting_task_id"] = task_id
-    ctx.user_data["state"] = "await_proof_photo"
-    await update.callback_query.edit_message_text(
-        f"📸 *Kirim Bukti*\n\nTask: *{task['title']}*\n\n"
-        f"Kirim *foto bukti* Anda mengerjakan task.\n"
-        f"/cancel untuk batal.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    require_photo = task.get("require_photo", True)
+    if require_photo:
+        ctx.user_data["state"] = "await_proof_photo"
+        await update.callback_query.edit_message_text(
+            f"📸 *Kirim Bukti*\n\nTask: *{task['title']}*\n\n"
+            f"Kirim *foto bukti* Anda mengerjakan task.\n"
+            f"/cancel untuk batal.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        # No photo required, jump straight to text
+        ctx.user_data["state"] = "await_proof_text"
+        ctx.user_data["proof_image"] = None
+        await update.callback_query.edit_message_text(
+            f"✍️ *Kirim Bukti*\n\nTask: *{task['title']}*\n\n"
+            f"Task ini tidak wajib foto. Kirim *keterangan/bukti teks* Anda.\n"
+            f"Bisa juga kirim foto (opsional).\n"
+            f"/cancel untuk batal.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def start_withdraw(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -717,7 +756,7 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     state = ctx.user_data.get("state")
     adm_state = ctx.user_data.get("adm_state")
 
-    if state != "await_proof_photo" and adm_state not in ("await_broadcast_image",):
+    if state not in ("await_proof_photo", "await_proof_text") and adm_state not in ("await_broadcast_image",):
         return
 
     photo = update.message.photo[-1]
@@ -732,6 +771,13 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["state"] = "await_proof_text"
         await update.message.reply_text(
             "✅ Foto diterima!\n\nKirim *keterangan* singkat atau /skip.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif state == "await_proof_text":
+        # Optional photo, user sent one
+        ctx.user_data["proof_image"] = img
+        await update.message.reply_text(
+            "📸 Foto tambahan diterima. Sekarang kirim *keterangan* atau /skip.",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif adm_state == "await_broadcast_image":
