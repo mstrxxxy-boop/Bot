@@ -5,13 +5,22 @@ from conftest import API
 from backend_test import make_user, make_withdrawal, TEST_IMG_B64
 
 
+def _first_ok_msg_id(log):
+    """New multi-channel schema: log['results'] = [{channel, message_id, ok}]"""
+    for r in (log.get("results") or []):
+        if r.get("ok") and r.get("message_id"):
+            return r["message_id"]
+    return None
+
+
+
 class TestBroadcastMarkdownRCA:
     def test_plain_text_broadcast_succeeds(self, client, mongo_db):
         """Proves bot IS channel admin and broadcast works when text has no MD specials."""
         text = f"TEST plain broadcast {uuid.uuid4().hex[:6]}"
         r = client.post(f"{API}/broadcast/manual", json={"text": text}, timeout=90)
         assert r.status_code == 200, r.text
-        assert r.json()["message_id"] is not None
+        assert any(x.get("ok") and x.get("message_id") for x in r.json()["results"])
         mongo_db.broadcast_logs.delete_many({"text": text})
 
     def test_underscore_text_broadcast_ok(self, client, mongo_db):
@@ -21,7 +30,7 @@ class TestBroadcastMarkdownRCA:
                         json={"text": text}, timeout=90)
         print(f"underscore broadcast -> {r.status_code} {r.text[:200]}")
         assert r.status_code == 200
-        assert r.json().get("message_id") is not None
+        assert any(x.get("ok") and x.get("message_id") for x in r.json().get("results", []))
         mongo_db.broadcast_logs.delete_many({"text": text})
 
     def test_asterisk_text_broadcast_ok(self, client, mongo_db):
@@ -30,7 +39,7 @@ class TestBroadcastMarkdownRCA:
                         json={"text": text}, timeout=90)
         print(f"asterisk broadcast -> {r.status_code} {r.text[:200]}")
         assert r.status_code == 200
-        assert r.json().get("message_id") is not None
+        assert any(x.get("ok") and x.get("message_id") for x in r.json().get("results", []))
         mongo_db.broadcast_logs.delete_many({"text": text})
 
     def test_withdraw_approve_broadcast_silently_fails_with_md_chars(self, client, mongo_db):
@@ -43,8 +52,8 @@ class TestBroadcastMarkdownRCA:
         assert r.status_code == 200, r.text
         log = mongo_db.broadcast_logs.find_one({"withdrawal_id": wid})
         assert log is not None
-        print(f"withdraw approve channel_message_id = {log.get('channel_message_id')}")
-        broadcast_ok = log.get("channel_message_id") is not None
+        print(f"withdraw approve channel_message_id = {_first_ok_msg_id(log)}")
+        broadcast_ok = _first_ok_msg_id(log) is not None
         mongo_db.broadcast_logs.delete_many({"withdrawal_id": wid})
         mongo_db.withdrawals.delete_one({"id": wid})
         mongo_db.balance_history.delete_many({"telegram_id": tg_id})
@@ -58,7 +67,7 @@ class TestBroadcastMarkdownRCA:
                         json={"note": "Pembayaran sudah dikirim", "image_base64": TEST_IMG_B64}, timeout=90)
         assert r.status_code == 200, r.text
         log = mongo_db.broadcast_logs.find_one({"withdrawal_id": wid})
-        msg_id = log.get("channel_message_id")
+        msg_id = _first_ok_msg_id(log)
         print(f"plain-note withdraw broadcast channel_message_id = {msg_id}")
         mongo_db.broadcast_logs.delete_many({"withdrawal_id": wid})
         mongo_db.withdrawals.delete_one({"id": wid})

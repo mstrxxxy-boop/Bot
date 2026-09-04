@@ -3,6 +3,15 @@ from conftest import API
 from backend_test import make_user, make_withdrawal, TEST_IMG_B64
 
 
+def _first_ok_msg_id(log):
+    """New multi-channel schema: log['results'] = [{channel, message_id, ok}]"""
+    for r in (log.get("results") or []):
+        if r.get("ok") and r.get("message_id"):
+            return r["message_id"]
+    return None
+
+
+
 class TestUsernameMarkdownRCA:
     def test_username_with_underscore_breaks_channel_broadcast(self, client, mongo_db):
         """Real seed user 'Arga_0136' has an underscore -> @Arga_0136 in the Markdown
@@ -15,7 +24,7 @@ class TestUsernameMarkdownRCA:
                         json={"note": "Pembayaran sudah dikirim", "image_base64": TEST_IMG_B64}, timeout=90)
         assert r.status_code == 200, r.text
         log = mongo_db.broadcast_logs.find_one({"withdrawal_id": wid})
-        msg_id = log.get("channel_message_id")
+        msg_id = _first_ok_msg_id(log)
         status = log.get("status")
         err = log.get("error")
         print(f"[username underscore] channel_message_id = {msg_id} status={status} error={err}")
@@ -36,7 +45,7 @@ class TestUsernameMarkdownRCA:
                         json={"note": "Sudah dikirim", "image_base64": TEST_IMG_B64}, timeout=90)
         assert r.status_code == 200, r.text
         log = mongo_db.broadcast_logs.find_one({"withdrawal_id": wid})
-        msg_id = log.get("channel_message_id")
+        msg_id = _first_ok_msg_id(log)
         print(f"[firstname asterisk] channel_message_id = {msg_id}")
         mongo_db.broadcast_logs.delete_many({"withdrawal_id": wid})
         mongo_db.withdrawals.delete_one({"id": wid})

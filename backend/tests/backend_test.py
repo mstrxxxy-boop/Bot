@@ -381,9 +381,10 @@ class TestWithdrawals:
         assert r.status_code == 200, r.text
         rb = r.json()
         assert rb.get("ok") is True
-        # FIX #3: outcome surfaced in response
-        for k in ("dm_sent", "channel_message_id", "broadcast_error", "dm_error"):
+        # FIX #3 (updated schema): outcome surfaced in response as multi-channel broadcast result
+        for k in ("dm_sent", "broadcast", "dm_error"):
             assert k in rb, f"missing {k} in approve response"
+        assert isinstance(rb["broadcast"].get("channels"), list)
 
         wd = mongo_db.withdrawals.find_one({"id": wid})
         assert wd["status"] == "approved"
@@ -400,9 +401,12 @@ class TestWithdrawals:
         assert "TEST_wduser" in logs["text"] or "TEST_First" in logs["text"]
         # FIX #3: status + error fields recorded
         assert logs.get("status") in ("sent", "failed"), f"status missing/invalid: {logs.get('status')}"
-        assert "error" in logs
-        if logs["status"] == "failed":
-            assert logs["error"], "failed broadcast must record an error message"
+        # new multi-channel schema: per-channel results carry ok/error
+        assert isinstance(logs.get("results"), list) and logs["results"]
+        for res in logs["results"]:
+            assert "channel" in res
+            if not res.get("ok"):
+                assert res.get("error"), "failed channel must record an error message"
 
         # visible in API broadcast logs
         api_logs = client.get(f"{API}/broadcast/logs", timeout=60).json()
@@ -570,7 +574,9 @@ class TestBroadcast:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data.get("ok") is True
-        assert data.get("message_id") is not None
+        results = data.get("results")
+        assert isinstance(results, list) and results
+        assert any(x.get("ok") and x.get("message_id") for x in results), results
 
         logs = client.get(f"{API}/broadcast/logs", timeout=60).json()
         assert any(x["text"] == text and x["type"] == "manual" for x in logs)
